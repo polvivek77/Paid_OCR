@@ -3,6 +3,11 @@
 DeepSeek's only image-capable API model is ``deepseek-flash``; override with
 DEEPSEEK_MODEL. The API is OpenAI-compatible, so this uses the ``openai`` SDK
 pointed at https://api.deepseek.com (override with DEEPSEEK_BASE_URL).
+
+Thinking mode is disabled by default (DEEPSEEK_THINKING=enabled turns it on):
+on a dense financial page deepseek-flash spent all 16 000 output tokens
+re-drafting the transcription in hidden reasoning and returned nothing, while
+non-thinking mode transcribed the same page in ~7 s.
 """
 from __future__ import annotations
 
@@ -37,6 +42,7 @@ def extract(file_bytes: bytes, filename: str) -> dict:
             model=model,
             max_tokens=MAX_OUTPUT_TOKENS,
             temperature=0,
+            extra_body={"thinking": {"type": os.environ.get("DEEPSEEK_THINKING", "disabled")}},
             messages=[{
                 "role": "user",
                 "content": [

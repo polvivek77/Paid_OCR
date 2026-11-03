@@ -18,25 +18,21 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # CUDA / cuDNN DLL discovery — must run BEFORE `import paddle`
 # ---------------------------------------------------------------------------
-def _register_dll_dirs() -> list[str]:
-    """Register every CUDA / cuDNN bin folder we can find. Returns paths added."""
-    if os.name != "nt" or not hasattr(os, "add_dll_directory"):
-        return []
+def _dll_dir_candidates(venv_site: Path, program_files_roots: list[Path]) -> list[Path]:
+    """CUDA / cuDNN bin folders to register, best match first.
 
+    The nvidia-* pip wheels installed with paddlepaddle-gpu match its CUDA
+    version exactly; when they are present, system-wide installs are skipped so
+    a cuDNN built for a different CUDA major version can't be picked up."""
     candidates: list[Path] = []
     # 1. nvidia-* pip wheels living beside paddle in the same venv
-    venv_site = Path(sys.executable).parent.parent / "Lib" / "site-packages"
-    for sub in ("nvidia/cudnn/bin", "nvidia/cublas/bin", "nvidia/cuda_runtime/bin",
-                "nvidia/cuda_nvrtc/bin", "nvidia/cufft/bin"):
-        p = venv_site / sub
-        if p.exists():
-            candidates.append(p)
+    nvidia = venv_site / "nvidia"
+    if nvidia.is_dir():
+        candidates.extend(sorted(p for p in nvidia.glob("*/bin") if p.is_dir()))
+    if candidates:
+        return candidates
 
     # 2. Stand-alone NVIDIA installs (both v9.x + the CUDA Toolkit)
-    program_files_roots = [
-        Path(r"C:\Program Files\NVIDIA\CUDNN"),
-        Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA"),
-    ]
     for root in program_files_roots:
         if not root.exists():
             continue
@@ -44,6 +40,19 @@ def _register_dll_dirs() -> list[str]:
             for bin_dir in version_dir.rglob("bin"):
                 if bin_dir.is_dir():
                     candidates.append(bin_dir)
+    return candidates
+
+
+def _register_dll_dirs() -> list[str]:
+    """Register the CUDA / cuDNN bin folders Paddle needs. Returns paths added."""
+    if os.name != "nt" or not hasattr(os, "add_dll_directory"):
+        return []
+
+    candidates = _dll_dir_candidates(
+        Path(sys.executable).parent.parent / "Lib" / "site-packages",
+        [Path(r"C:\Program Files\NVIDIA\CUDNN"),
+         Path(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA")],
+    )
 
     added: list[str] = []
     for path in candidates:
@@ -111,9 +120,10 @@ def _purge_paddle_modules() -> None:
 def _init_ocr(requested_device: str):
     """Try requested device first, fall back to CPU if cuDNN cannot load.
 
-    Set env `PADDLE_FORCE_CPU=1` to skip GPU entirely — needed on Blackwell
-    (RTX 50-series) GPUs where paddlepaddle-gpu cu126 wheels have no sm_120
-    kernels and any GPU init corrupts the paddle module state.
+    Set env `PADDLE_FORCE_CPU=1` to skip GPU entirely. Only needed with old
+    cu126 wheels on Blackwell (RTX 50-series) GPUs, which have no sm_120
+    kernels; the cu129 paddlepaddle-gpu 3.4 wheel pinned in pyproject.toml
+    runs on those cards.
     """
     if os.environ.get("PADDLE_FORCE_CPU", "").lower() in ("1", "true", "yes"):
         _log("PADDLE_FORCE_CPU set — skipping GPU attempt")

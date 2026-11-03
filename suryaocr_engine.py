@@ -1,20 +1,21 @@
 """Surya OCR runner (Surya 0.22+ predictor API).
 
 Backend selection:
-    - On GPU (torch.cuda available) Surya auto-picks the **vllm** backend, which
-      spawns a Docker container. You must have Docker Desktop running.
-    - Without CUDA Surya uses **llamacpp**, which needs the `llama-server`
-      binary. `engines/llamacpp_helper.py` locates or auto-installs one.
-    - You can override with `SURYA_INFERENCE_BACKEND=llamacpp|vllm`.
+    - Default is **llamacpp**: the `llama-server` binary runs the recognition
+      VLM. On an NVIDIA machine the CUDA build is used (Surya offloads every
+      layer, LLAMA_CPP_NGL=99), so no Docker is needed for GPU inference.
+    - `SURYA_INFERENCE_BACKEND=vllm` opts into the vllm backend, which spawns a
+      Docker container (Docker Desktop must be running).
+    - Detection always runs in-process on torch (CUDA when available).
 """
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from engines.llamacpp_helper import LlamaServerNotFound, ensure_llama_server
+from engines.llamacpp_helper import LlamaServerNotFound, ensure_llama_server, is_cuda_build
 from engines.logging_setup import get_logger, preload_windows_dlls
-from engines.utils import has_torch_gpu, load_as_pil, timer
+from engines.utils import has_nvidia_gpu, has_torch_gpu, load_as_pil, timer
 
 preload_windows_dlls()
 
@@ -28,7 +29,14 @@ def _choose_backend() -> str:
     env = os.environ.get("SURYA_INFERENCE_BACKEND")
     if env:
         return env
-    return "vllm" if has_torch_gpu() else "llamacpp"
+    return "llamacpp"
+
+
+def _recognition_device(backend: str, server: str | None) -> str:
+    """Where the recognition VLM (the slow part) really runs."""
+    if backend == "vllm":
+        return "cuda"
+    return "cuda" if server and has_nvidia_gpu() and is_cuda_build(server) else "cpu"
 
 
 def _load():
@@ -38,18 +46,20 @@ def _load():
     os.environ["SURYA_INFERENCE_BACKEND"] = backend
     log.info("Surya: backend=%s", backend)
 
+    server = None
     if backend == "llamacpp":
-        # Prefer the CUDA build if one is available (helper checks both dirs).
-        ensure_llama_server(auto_install=False, prefer_cuda=has_torch_gpu())
+        server = ensure_llama_server(auto_install=False, prefer_cuda=has_nvidia_gpu())
+        log.info("Surya: llama-server=%s (cuda build=%s)", server, is_cuda_build(server))
 
     log.info("Surya: initialising predictors…")
     from surya.detection import DetectionPredictor
     from surya.recognition import RecognitionPredictor
     _state["det"] = DetectionPredictor()
     _state["rec"] = RecognitionPredictor()
-    _state["device"] = "cuda" if has_torch_gpu() else "cpu"
+    _state["device"] = _recognition_device(backend, server)
     _state["backend"] = backend
-    log.info("Surya: ready (device=%s, backend=%s)", _state["device"], backend)
+    log.info("Surya: ready (device=%s, detection on %s, backend=%s)",
+             _state["device"], "cuda" if has_torch_gpu() else "cpu", backend)
 
 
 import html as _html
@@ -171,7 +181,7 @@ def _friendly_error(exc: Exception) -> str:
 
 def extract(file_bytes: bytes, filename: str) -> dict:
     log.info("Surya → %s (%d bytes)", filename, len(file_bytes))
-    device = "cuda" if has_torch_gpu() else "cpu"
+    device = _state.get("device", "cpu")
     try:
         _load()
         pages = load_as_pil(file_bytes, filename)

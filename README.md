@@ -14,35 +14,33 @@ Local engines use a GPU when one is available and fall back to the CPU otherwise
 ## 1. Set up the virtual environment (with `uv`)
 
 ```powershell
-# From the project directory
-uv venv --python 3.11
+# From the project directory: creates .venv (Python 3.11) and installs everything
+uv sync
 .venv\Scripts\activate
-
-# PyTorch with CUDA. RTX 50-series (Blackwell) needs CUDA 12.8 or newer.
-uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-
-# Everything else
-uv pip install -r requirements.txt
-
-# PaddleOCR needs exactly one PaddlePaddle runtime. The CPU wheel works on every machine:
-uv pip install paddlepaddle
 ```
 
-> **Paddle GPU.** Install the GPU wheel instead of `paddlepaddle` (never both, because they share the `paddle` namespace):
-> ```powershell
-> uv pip install paddlepaddle-gpu==3.2.2 --index https://www.paddlepaddle.org.cn/packages/stable/cu129/
-> ```
-> On GPUs that Paddle's wheel doesn't support, such as RTX 50-series, set `PADDLE_FORCE_CPU=1`.
+`pyproject.toml` pins the GPU builds, so `uv sync` and `uv run` always install them:
+
+| Package            | Build                    | Index                                  |
+|--------------------|--------------------------|----------------------------------------|
+| `torch`, `torchvision` | CUDA 12.8 (`+cu128`) | `download.pytorch.org/whl/cu128`       |
+| `paddlepaddle-gpu` | 3.4.0, CUDA 12.9         | `paddlepaddle.org.cn/packages/stable/cu129` |
+
+Both include kernels for RTX 50-series (Blackwell, sm_120) GPUs, and both fall back to the CPU on machines without an NVIDIA GPU.
+
+> **Don't** install packages with `uv pip install torch` or `uv pip install -r requirements.txt`. PyPI's Windows `torch` wheel is CPU-only and silently replaces the CUDA build, which makes every engine run on the CPU. If that happens, `uv sync` restores the GPU builds, and the app's sidebar warns you about it.
+>
+> Never install the CPU `paddlepaddle` package next to `paddlepaddle-gpu`, because both use the `paddle` namespace.
 
 ### System dependencies (not installable via pip)
 These are only needed by the local engines:
 - **Tesseract:** https://github.com/UB-Mannheim/tesseract/wiki (Windows)
 - **Ghostscript** (needed by Camelot): https://ghostscript.com/releases/gsdnld.html
-- **llama.cpp `llama-server` binary** (needed by Surya OCR 0.22+ and Marker 2.0+). One command fetches the latest Windows build:
+- **llama.cpp `llama-server` binary** (needed by Surya OCR 0.22+ and Marker 2.0+, which run their recognition model in it). One command fetches the latest Windows build:
   ```powershell
-  python scripts\install_llama_cpp.py --cuda
+  python scripts\install_llama_cpp.py
   ```
-  It downloads about 50 MB into `.tools/llama-cpp/`, where the engines find it automatically. You can also click **"Install llama.cpp now"** in the Streamlit sidebar.
+  On a machine with an NVIDIA GPU it installs the **CUDA** build into `.tools/llama-cpp/cuda/`; otherwise it installs the CPU build. Use `--cpu` or `--cuda` to force one. The engines always prefer the CUDA build when both are present. The sidebar shows which build is in use and offers an install button if the right one is missing.
 
 ---
 
@@ -67,6 +65,8 @@ DEEPSEEK_API_KEY=sk-...
 | DeepSeek   | `deepseek_engine.py`  | `deepseek-flash`  | `DEEPSEEK_MODEL`  |
 
 `deepseek-flash` is DeepSeek's only API model that accepts images, and `deepseek-v4-pro` is text-only. To compare cheaper tiers, set for example `OPENAI_MODEL=gpt-6-luna` or `ANTHROPIC_MODEL=claude-sonnet-5-5`.
+
+DeepSeek's thinking mode is **off** by default (`DEEPSEEK_THINKING=disabled`). With it on, `deepseek-flash` spent the whole 16,000-token limit on hidden reasoning for a dense financial page and returned no text. With it off, it transcribed the same page in about 7 seconds. If any model uses up the token limit without returning text, the engine reports an error rather than a 0% "success".
 
 Perplexity isn't included. Its Sonar chat API was retired in September 2026, and the replacement Agent API has no vision model of its own: it forwards image requests to OpenAI or Anthropic models, which this project already tests directly.
 
@@ -134,7 +134,19 @@ The pages-to-send selector in the app limits which pages are sent, and therefore
 
 ---
 
-## 6. What each engine is good at
+## 6. Tests
+
+```powershell
+uv run pytest                     # fast unit + config tests, plus GPU checks (about 10 s)
+uv run pytest -m gpu              # only: are torch, Paddle and llama.cpp really using the GPU?
+uv run pytest -m integration -s   # every engine on 3 sample pages, checking which device each one used
+```
+
+The integration run sends one page each of `ami_organics.pdf`, `sbi_one_page.pdf` and page 1 of `attention_is_all_you_need.pdf`. It makes 3 paid API calls per cloud engine.
+
+---
+
+## 7. What each engine is good at
 
 | Engine       | PDF | Image | Tables | Layout | GPU   | Notes                                         |
 |--------------|-----|-------|--------|--------|-------|-----------------------------------------------|
@@ -153,13 +165,25 @@ The pages-to-send selector in the app limits which pages are sent, and therefore
 
 ---
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 ### Cloud engines
 - **`OPENAI_API_KEY is not set`** (or the Anthropic or DeepSeek equivalent): add the key to `.env` in the project root.
 - **`model_not_found` / 404:** your account may not have access to the default model. Set `*_MODEL` in `.env` to a model you can use.
 - **Text cut off on dense pages:** the log (`app.log`) warns `output hit the token limit`. Raise `LLM_OCR_MAX_TOKENS`.
 - **Rate-limit (429) errors on long PDFs:** lower `LLM_OCR_CONCURRENCY`, for example to `1`.
+
+### Engines run on CPU although the laptop has an NVIDIA GPU
+Run `uv run pytest -m gpu`. Each failing test names the cause:
+
+| Failing test | Cause | Fix |
+|---|---|---|
+| `test_torch_is_a_cuda_build…` | CPU-only torch was installed (`2.x+cpu`) | `uv sync` |
+| `test_a_cuda_llama_server…` | Surya and Marker found only the CPU llama.cpp build | `python scripts\install_llama_cpp.py` |
+| `test_paddle_gpu_is_not_forced_off` | `PADDLE_FORCE_CPU=1` is set in your environment | Remove it from Windows *Environment Variables* and restart the terminal |
+| `test_paddle_runs_a_kernel_on_the_gpu` | The CPU `paddlepaddle` package is installed | `uv sync` |
+
+Tesseract, pdfplumber and Camelot have no GPU support, so they always run on the CPU.
 
 ### Local engines
 - **PaddlePaddle install fails** on Python 3.13 or 3.14: use Python 3.11 (`uv venv --python 3.11`).

@@ -1,3 +1,6 @@
+# Prefer `uv sync`: pyproject.toml pins the CUDA builds of torch and
+# paddlepaddle-gpu. Installing this file with plain pip/uv pip pulls PyPI's
+# CPU-only Windows torch wheel, and every torch engine then runs on CPU.
 streamlit>=1.36
 numpy>=1.26,<2.0
 pillow>=10.0,<11
@@ -21,5 +24,5 @@ pdfplumber>=0.11
 camelot-py>=0.11
 docling>=1.7
 marker-pdf>=0.2
-torch>=2.2
-torchvision>=0.17
+torch>=2.7
+torchvision>=0.22

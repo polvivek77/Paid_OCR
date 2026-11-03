@@ -23,10 +23,11 @@ dependencies = [
     "anthropic>=0.40",
     # OCR / document tools
     "paddleocr>=2.7",
-    # Install exactly one PaddlePaddle runtime.  The Windows RTX 50-series GPU
-    # wheel is installed separately (see README / setup instructions); keeping
-    # the CPU distribution here makes uv install both packages into the same
-    # `paddle` namespace and corrupts the installation.
+    # Exactly one PaddlePaddle runtime: the GPU build (it also runs on CPU).
+    # Never add the CPU `paddlepaddle` package too — both own the `paddle`
+    # namespace. cu129 builds include RTX 50-series (sm_120) kernels.
+    "paddlepaddle-gpu==3.4.0",
+    "setuptools",  # imported by paddle at runtime
     "surya-ocr>=0.6",
     "python-doctr>=0.9",
     "pytesseract>=0.3.10",
@@ -35,14 +36,44 @@ dependencies = [
     "camelot-py>=0.11",
     "docling>=1.7",
     "marker-pdf>=0.2",
-    # Torch (installed separately for CUDA if needed)
-    "torch>=2.2",
-    "torchvision>=0.17",
+    # Torch — resolved from the CUDA index below, never PyPI (PyPI's Windows
+    # wheels are CPU-only). cu128+ is required for RTX 50-series (sm_120).
+    "torch>=2.7",
+    "torchvision>=0.22",
 ]
+
+[dependency-groups]
+dev = ["pytest>=8"]
 
 [tool.uv]
 # uv-specific config; keep index defaults
 prerelease = "allow"
+# Resolve for Windows only: on Linux, CUDA torch and paddlepaddle-gpu pin
+# conflicting nvidia-*-cu12 wheels and can't share one environment.
+environments = ["sys_platform == 'win32'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+paddlepaddle-gpu = { index = "paddle-cu129" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "paddle-cu129"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu129/"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: needs the real NVIDIA GPU and CUDA builds installed",
+    "integration: runs real engines end-to-end (slow; cloud engines cost money)",
+]
+addopts = "-m 'not integration'"
 
 [build-system]
 requires = ["hatchling"]

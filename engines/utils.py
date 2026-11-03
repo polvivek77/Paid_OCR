@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import shutil
 import subprocess
 import sys
 import time
@@ -14,12 +15,55 @@ import numpy as np
 from PIL import Image
 
 
+@lru_cache(maxsize=1)
+def has_nvidia_gpu() -> bool:
+    """Does the *hardware* have an NVIDIA GPU with a working driver?
+
+    Asks ``nvidia-smi`` rather than torch: a CPU-only torch wheel answers "no"
+    on a machine that does have a GPU, which is exactly how the llama.cpp
+    installer once picked the CPU build on an RTX 5050 laptop."""
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return False
+    try:
+        proc = subprocess.run([exe, "-L"], capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0 and "GPU " in (proc.stdout or "")
+
+
 def has_torch_gpu() -> bool:
     try:
         import torch
         return bool(torch.cuda.is_available())
     except Exception:
         return False
+
+
+def _torch_build() -> tuple[str | None, str | None, bool]:
+    """(torch version, CUDA version it was built for, cuda.is_available())."""
+    try:
+        import torch
+        return torch.__version__, torch.version.cuda, bool(torch.cuda.is_available())
+    except Exception:
+        return None, None, False
+
+
+def torch_gpu_problem() -> str | None:
+    """Explain why torch-based engines can't use a GPU that the machine has,
+    or None when there's nothing to fix."""
+    if not has_nvidia_gpu():
+        return None
+    version, cuda, available = _torch_build()
+    if version is None:
+        return "PyTorch is not installed. Run `uv sync`."
+    if not cuda:
+        return (f"PyTorch {version} is a CPU-only build, so the torch engines can't use your "
+                "NVIDIA GPU. Run `uv sync` (pyproject.toml pins the CUDA build).")
+    if not available:
+        return (f"PyTorch {version} was built for CUDA {cuda} but cannot reach the GPU. "
+                "Update the NVIDIA driver and restart.")
+    return None
 
 
 @lru_cache(maxsize=1)

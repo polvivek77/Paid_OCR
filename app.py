@@ -50,12 +50,15 @@ log = get_logger("ocr.app")
 from engines.llamacpp_helper import (
     LlamaServerNotFound,
     install_llama_cpp_windows,
+    is_cuda_build,
     locate_llama_server,
 )
 from engines.metrics import evaluate
 from engines.utils import (
+    has_nvidia_gpu,
     has_paddle_gpu,
     has_torch_gpu,
+    torch_gpu_problem,
     load_as_pil,
     pdf_embedded_text_length,
     pdf_page_count,
@@ -144,6 +147,9 @@ def _sidebar() -> list[Engine]:
         f"- PyTorch CUDA: {'🟢 yes' if torch_gpu else '⚪ no (CPU)'}\n"
         f"- Paddle CUDA: {'🟢 yes' if paddle_gpu else '⚪ no (CPU)'}"
     )
+    problem = torch_gpu_problem()
+    if problem:
+        st.sidebar.warning(problem)
 
     st.sidebar.subheader("Engines to run")
     if st.sidebar.button("Select all"):
@@ -180,27 +186,31 @@ def _sidebar() -> list[Engine]:
     st.sidebar.subheader("Optional dependencies")
 
     # llama-server for Surya llamacpp backend
-    llama = locate_llama_server()
+    nvidia = has_nvidia_gpu()
+    llama = locate_llama_server(prefer_cuda=nvidia)
+    llama_ok = llama and (is_cuda_build(llama) or not nvidia)
     if llama:
-        st.sidebar.markdown(f"- llama-server: 🟢 `{Path(llama).name}`")
+        build = "CUDA" if is_cuda_build(llama) else "CPU"
+        st.sidebar.markdown(f"- llama-server: {'🟢' if llama_ok else '🟠'} `{Path(llama).name}` ({build} build)")
     else:
         st.sidebar.markdown("- llama-server: ⚪ missing (needed by Surya llamacpp backend)")
-        if st.sidebar.button("Install llama.cpp now"):
-            with st.spinner("Downloading llama.cpp… (≈18 MB)"):
+    if not llama_ok:
+        if st.sidebar.button(f"Install llama.cpp ({'CUDA' if nvidia else 'CPU'} build) now"):
+            with st.spinner("Downloading llama.cpp…"):
                 try:
-                    install_llama_cpp_windows(cuda=has_torch_gpu())
+                    install_llama_cpp_windows(cuda=nvidia)
                     st.sidebar.success("llama-server installed. Re-run engines.")
                 except LlamaServerNotFound as e:
                     st.sidebar.error(str(e))
 
-    # Docker for Surya vllm backend (auto-picked when CUDA is present)
-    if has_torch_gpu():
+    # Docker for Surya's opt-in vllm backend (SURYA_INFERENCE_BACKEND=vllm)
+    if os.environ.get("SURYA_INFERENCE_BACKEND") == "vllm":
         docker_ok = _docker_running()
         st.sidebar.markdown(
             "- Docker Desktop: "
             + ("🟢 running (Surya vllm backend available)"
                if docker_ok
-               else "⚪ not detected (Surya will fail unless SURYA_INFERENCE_BACKEND=llamacpp)")
+               else "⚪ not detected (Surya will fail; unset SURYA_INFERENCE_BACKEND to use llama.cpp)")
         )
 
     st.sidebar.markdown("---")

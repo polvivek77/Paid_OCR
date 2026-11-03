@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
 
 from engines.llamacpp_helper import LlamaServerNotFound, install_llama_cpp_windows
 from engines.logging_setup import setup_logging
+from engines.utils import has_nvidia_gpu
 
 
 def _print_progress(read: int, total: int) -> None:
@@ -42,20 +43,22 @@ def _print_progress(read: int, total: int) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Install llama.cpp for Surya / Marker")
-    parser.add_argument("--cuda", action="store_true", help="install the NVIDIA CUDA build (recommended for Surya OCR)")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--cuda", action="store_true", help="force the NVIDIA CUDA build")
+    group.add_argument("--cpu", action="store_true", help="force the CPU build")
     args = parser.parse_args()
     setup_logging()
+    # Default: CUDA build whenever the machine has an NVIDIA GPU.
+    cuda = args.cuda or (not args.cpu and has_nvidia_gpu())
+    print(f"Installing the {'CUDA' if cuda else 'CPU'} build of llama.cpp…")
     try:
-        exe = install_llama_cpp_windows(progress=_print_progress, cuda=args.cuda)
+        exe = install_llama_cpp_windows(progress=_print_progress, cuda=cuda)
     except LlamaServerNotFound as e:
         print(f"\nERROR: {e}", file=sys.stderr)
         return 1
     print()  # newline after progress
     print(f"[OK] llama-server installed at {exe}")
-    if args.cuda:
-        print("Set LLAMA_CPP_BINARY to this path before running Surya OCR and Marker.")
-    else:
-        print("You can now run Surya OCR and Marker (CPU mode).")
+    print(f"You can now run Surya OCR and Marker ({'GPU' if cuda else 'CPU'} mode).")
     return 0
 
 

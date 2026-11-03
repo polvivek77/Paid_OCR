@@ -107,6 +107,8 @@ def encode_page(img: Image.Image) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 _FENCE_RE = re.compile(r"^```[a-zA-Z]*\s*$")
 _TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
+# **bold** / __bold__ wrapped around non-space text (leaves "5 ** 2" alone)
+_BOLD_RE = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1")
 
 
 def _is_table_row(line: str) -> bool:
@@ -123,12 +125,13 @@ def strip_fences(text: str) -> str:
 
 
 def markdown_to_plain(text: str) -> str:
-    """Turn Markdown tables into space-separated text so they score fairly
-    against a plain-text ground truth."""
+    """Turn Markdown tables into space-separated text and drop bold markers so
+    the output scores fairly against a plain-text ground truth."""
     out: list[str] = []
     for line in text.splitlines():
         if _TABLE_SEP_RE.match(line) and "-" in line:
             continue
+        line = _BOLD_RE.sub(r"\2", line)
         if _is_table_row(line):
             out.append(" ".join(c for c in _split_row(line) if c))
         else:
@@ -205,6 +208,16 @@ def run_engine(
     except Exception as e:
         log.exception("%s failed", engine)
         return _error(engine, f"{type(e).__name__}: {e}")
+
+    # A page that ran out of tokens before producing any text (e.g. a reasoning
+    # model that spent the whole budget thinking) must not be scored as "0% OK".
+    empty = [i + 1 for i, r in enumerate(results) if r.truncated and not r.text.strip()]
+    if empty:
+        msg = (f"Page(s) {empty} returned no text: the model used the whole output token "
+               f"limit ({MAX_OUTPUT_TOKENS}, LLM_OCR_MAX_TOKENS) without answering — usually "
+               "hidden reasoning. Disable the model's thinking mode or raise the limit.")
+        log.error("%s: %s", engine, msg)
+        return _error(engine, msg)
 
     page_texts: list[str] = []
     lines: list[dict] = []

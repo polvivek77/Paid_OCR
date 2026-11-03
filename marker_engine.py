@@ -6,7 +6,7 @@ from pathlib import Path
 
 from engines.llamacpp_helper import LlamaServerNotFound, ensure_llama_server
 from engines.logging_setup import get_logger, preload_windows_dlls
-from engines.utils import has_torch_gpu, timer
+from engines.utils import has_nvidia_gpu, has_torch_gpu, timer
 
 preload_windows_dlls()
 
@@ -19,8 +19,9 @@ def _load(device: str):
     if _state:
         return
     # Marker delegates OCR to Surya, which spawns `llama-server`. Point it at
-    # our project-local install if we have one.
-    ensure_llama_server(auto_install=False)
+    # our project-local install, preferring the CUDA build on NVIDIA machines.
+    server = ensure_llama_server(auto_install=False, prefer_cuda=has_nvidia_gpu())
+    log.info("Marker: llama-server=%s", server)
     log.info("Marker: loading models…")
     from marker.converters.pdf import PdfConverter
     from marker.models import create_model_dict

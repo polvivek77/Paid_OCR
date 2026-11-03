@@ -76,47 +76,71 @@ def _local_install_candidates(prefer_cuda: bool = False) -> list[Path]:
     return out
 
 
-def locate_llama_server(prefer_cuda: bool = False) -> str | None:
-    """Return an existing llama-server binary path, or None."""
-    # 1. Explicit environment variable
+def is_cuda_build(server_path: str | Path) -> bool:
+    """True if this llama-server was built with the CUDA backend.
+
+    llama.cpp ships its GPU backend as a sibling ``ggml-cuda`` library; the CPU
+    zips only contain ``ggml-cpu-*``."""
+    folder = Path(server_path).resolve().parent
+    return any(folder.glob("ggml-cuda*.dll")) or any(folder.glob("libggml-cuda*.so"))
+
+
+def _all_llama_servers(prefer_cuda: bool) -> list[str]:
+    """Every llama-server we can find, in precedence order, de-duplicated."""
+    found: list[str] = []
+
+    def add(p: str | Path | None) -> None:
+        if p and Path(p).is_file():
+            s = str(Path(p).resolve())
+            if s not in found:
+                found.append(s)
+
+    # 1. Explicit environment variable (full path or bare command name)
     env = os.environ.get("LLAMA_CPP_BINARY")
     if env:
-        p = Path(env)
-        if p.exists() and p.is_file():
-            log.debug("llama-server via LLAMA_CPP_BINARY: %s", p)
-            return str(p)
-        # Bare command name — resolve via PATH
-        via_path = shutil.which(env)
-        if via_path:
-            return via_path
-
+        add(env if Path(env).is_file() else shutil.which(env))
     # 2. On system PATH
     for name in _binary_names():
-        exe = shutil.which(name) or shutil.which(name.replace(".exe", ""))
-        if exe:
-            log.debug("llama-server via PATH: %s", exe)
-            return exe
-
+        add(shutil.which(name) or shutil.which(name.replace(".exe", "")))
     # 3. Project-local .tools/llama-cpp/
     for candidate in _local_install_candidates(prefer_cuda=prefer_cuda):
-        if candidate.exists() and candidate.is_file():
-            log.debug("llama-server via project-local: %s", candidate)
-            return str(candidate.resolve())
+        add(candidate)
+    return found
 
+
+def locate_llama_server(prefer_cuda: bool = False) -> str | None:
+    """Return an existing llama-server binary path, or None.
+
+    With ``prefer_cuda`` a CUDA build anywhere beats a CPU build earlier in the
+    precedence order — a CPU path left in LLAMA_CPP_BINARY by a previous run
+    must not shadow a CUDA build installed since."""
+    servers = _all_llama_servers(prefer_cuda)
+    if prefer_cuda:
+        for s in servers:
+            if is_cuda_build(s):
+                log.debug("llama-server (CUDA build): %s", s)
+                return s
+    if servers:
+        log.debug("llama-server: %s", servers[0])
+        return servers[0]
     return None
 
 
 def ensure_llama_server(auto_install: bool = False, *, prefer_cuda: bool = False) -> str:
     """Return a llama-server path. Raise LlamaServerNotFound with an actionable
     message if none is available. When ``auto_install=True`` this may download
-    a Windows binary (see install_llama_cpp_windows)."""
+    a Windows binary (see install_llama_cpp_windows); with ``prefer_cuda`` it
+    also downloads the CUDA build when only a CPU build is present."""
     path = locate_llama_server(prefer_cuda=prefer_cuda)
-    if path:
+    can_install = auto_install and os.name == "nt"
+    upgrade_to_cuda = can_install and prefer_cuda and path is not None and not is_cuda_build(path)
+    if path and not upgrade_to_cuda:
         os.environ["LLAMA_CPP_BINARY"] = path
         return path
 
-    if auto_install and os.name == "nt":
-        log.info("llama-server not found — auto-installing…")
+    if can_install:
+        log.info("CUDA llama-server not found — auto-installing…" if prefer_cuda
+                 else "llama-server not found — auto-installing…")
         install_llama_cpp_windows(cuda=prefer_cuda)
         path = locate_llama_server(prefer_cuda=prefer_cuda)
         if path:
